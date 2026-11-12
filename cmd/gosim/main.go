@@ -13,7 +13,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -27,13 +26,15 @@ import (
 var rawDoc string
 
 func doc() string {
-	doc := strings.TrimPrefix(rawDoc, "/*\n")
+	// doc.go may be checked out with CRLF line endings, eg. on Windows
+	doc := strings.ReplaceAll(rawDoc, "\r\n", "\n")
+	doc = strings.TrimPrefix(doc, "/*\n")
 	doc = doc[:strings.LastIndex(doc, "*/")]
 	return doc
 }
 
 func commandName(cmd string) string {
-	return fmt.Sprintf("%s %s", path.Base(os.Args[0]), cmd)
+	return fmt.Sprintf("%s %s", strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe"), cmd)
 }
 
 func packageName(pkgPath string) string {
@@ -292,7 +293,7 @@ func main() {
 		for _, group := range groups {
 			// copy over existing binaries to make it faster
 			for _, pkg := range group {
-				binName := packageName(pkg) + ".test"
+				binName := packageName(pkg) + ".test" + exeSuffix()
 				src := filepath.Join(dstDir, gosimtool.PreparedTestBinName(pkg))
 				dst := filepath.Join(buildDir, binName)
 				if err := copyFile(src, dst, 0o755); err != nil {
@@ -334,7 +335,7 @@ func main() {
 			}
 
 			for _, pkg := range group {
-				binName := packageName(pkg) + ".test"
+				binName := packageName(pkg) + ".test" + exeSuffix()
 				src := filepath.Join(buildDir, binName)
 				dst := filepath.Join(dstDir, gosimtool.PreparedTestBinName(pkg))
 
@@ -456,7 +457,7 @@ stepout`)
 		)
 
 		cmd := exec.Command(name, flags...)
-		cmd.Dir = path.Join(modDir, gosimtool.OutputDirectory, "translated", cfg.AsDirname())
+		cmd.Dir = filepath.Join(modDir, gosimtool.OutputDirectory, "translated", cfg.AsDirname())
 		cmd.Stdout = os.Stdout
 		cmd.Stdin = os.Stdin
 		cmd.Stderr = os.Stderr
@@ -479,3 +480,12 @@ stepout`)
 }
 
 // TODO: test with and without gosim dependency? (script test?)
+
+// exeSuffix returns the suffix `go test -c` adds to binaries on the host
+// operating system.
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}

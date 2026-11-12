@@ -5,9 +5,12 @@ import (
 	_ "embed"
 	"flag"
 	"go/token"
+	"go/version"
 	"log"
 	"os"
 	"path"
+	"path/filepath"
+	"runtime"
 	"runtime/pprof"
 	"slices"
 	"strings"
@@ -24,7 +27,7 @@ import (
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 
-var skippedPackagesGo123 = map[string]bool{
+var skippedPackagesGo127 = map[string]bool{
 	"runtime": true, // XXX wait what
 	"errors":  true,
 	"reflect": true,
@@ -47,16 +50,24 @@ var skippedPackagesGo123 = map[string]bool{
 
 	"unique": true, // XXX: yes
 
-	"testing":                     true,
-	"testing/internal/testdeps":   true,
-	"internal/reflectlite":        true,
+	"testing":                   true,
+	"testing/internal/testdeps": true,
+	"internal/reflectlite":      true,
+
+	// Low-level runtime support packages. The standard library outside of the
+	// runtime only uses a handful of identifiers from these; they are replaced
+	// by small gosim implementations (see buildReplacePackagesAndPackageNames).
+	"internal/runtime/atomic": true,
+	"internal/runtime/maps":   true,
+	"internal/runtime/sys":    true,
+
 	gosimruntimePackage:           true,
 	gosimruntimePackage + "_test": true, // eh
 	gosimruntimePackage + ".test": true, // eh
 	// reflectPackage: true,
 }
 
-var keepAsmPackagesGo123 = map[string]bool{
+var keepAsmPackagesGo127 = map[string]bool{
 	"crypto/aes":                                   true,
 	"crypto/internal/boring/sig":                   true,
 	"crypto/internal/nistec":                       true,
@@ -73,6 +84,17 @@ var keepAsmPackagesGo123 = map[string]bool{
 	"vendor/golang.org/x/crypto/sha3":              true,
 	"hash/crc32":                                   true,
 
+	// go1.24 moved most crypto assembly into crypto/internal/fips140/...
+	"crypto/internal/fips140/aes":                true,
+	"crypto/internal/fips140/aes/gcm":            true,
+	"crypto/internal/fips140/bigmod":             true,
+	"crypto/internal/fips140/edwards25519/field": true,
+	"crypto/internal/fips140/nistec":             true,
+	"crypto/internal/fips140/sha256":             true,
+	"crypto/internal/fips140/sha3":               true,
+	"crypto/internal/fips140/sha512":             true,
+	"crypto/internal/fips140/subtle":             true,
+
 	"net/url":  true, // XXX: linkname setpath nonsense
 	"net/http": true, // XXX: linkname roundtrip nonsense
 
@@ -81,6 +103,7 @@ var keepAsmPackagesGo123 = map[string]bool{
 
 var PublicExportHacks = map[string][]string{
 	"encoding/binary":                  {"littleEndian"},
+	"encoding/json/jsontext":           {"export"},
 	"internal/poll":                    {"errNetClosing"},
 	"github.com/golang/protobuf/proto": {"enumsByName"},
 }
@@ -96,17 +119,32 @@ const gosimModPath = gosimtool.Module
 
 const (
 	gosimruntimePackage = gosimModPath + "/gosimruntime"
-	hooksGo123Package   = gosimModPath + "/internal/hooks/go123"
+	hooksGo127Package   = gosimModPath + "/internal/hooks/go127"
 	reflectPackage      = gosimModPath + "/internal/reflect"
 	simulationPackage   = gosimModPath + "/internal/simulation"
 	testingPackage      = gosimModPath + "/internal/testing"
+
+	runtimeAtomicPackage = hooksGo127Package + "/internalruntime/atomic"
+	runtimeMapsPackage   = hooksGo127Package + "/internalruntime/maps"
+	runtimeSysPackage    = hooksGo127Package + "/internalruntime/sys"
 )
 
 var TranslatedRuntimePackages = []string{
-	hooksGo123Package,
+	hooksGo127Package,
 	reflectPackage,
 	simulationPackage,
 	testingPackage,
+	runtimeAtomicPackage,
+	runtimeMapsPackage,
+	runtimeSysPackage,
+}
+
+// replacedRuntimePackages maps standard library packages that are not
+// translated to the gosim package that replaces them.
+var replacedRuntimePackages = map[string]string{
+	"internal/runtime/atomic": runtimeAtomicPackage,
+	"internal/runtime/maps":   runtimeMapsPackage,
+	"internal/runtime/sys":    runtimeSysPackage,
 }
 
 const (
@@ -134,6 +172,12 @@ func loadPackages(patterns []string, b gosimtool.BuildConfig, mode packages.Load
 	env := append(os.Environ(), "GOOS="+b.GOOS, "GOARCH="+b.GOARCH, "CGO_ENABLED=0")
 	cfg.BuildFlags = []string{"-tags", strings.Join(tags, ",")}
 	cfg.Env = env
+
+	overlay, err := stdlibOverlay(env)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Overlay = overlay
 
 	// load packages
 	packages, err := packages.Load(cfg, patterns...)
@@ -281,6 +325,19 @@ func writeGoModFile(modDir string, modFile *modfile.File, writer *outputWriter) 
 		log.Fatal(err)
 	}
 
+	// The translated module contains a copy of the standard library, which
+	// can use language features newer than the go version of the module being
+	// translated (eg. generic methods in math/rand/v2 since go1.27).
+	goVersion := goToolchainVersion()
+	if modFile.Go == nil || version.Compare("go"+modFile.Go.Version, goVersion) < 0 {
+		if err := modFile.AddGoStmt(strings.TrimPrefix(goVersion, "go")); err != nil {
+			log.Fatal(err)
+		}
+		if modFile.Toolchain != nil && version.Compare(modFile.Toolchain.Name, goVersion) < 0 {
+			modFile.DropToolchainStmt()
+		}
+	}
+
 	if isGosim {
 		// special case running translate in the gosim module
 		if err := modFile.AddRequire(gosimModPath, "v0.0.0"); err != nil {
@@ -294,9 +351,9 @@ func writeGoModFile(modDir string, modFile *modfile.File, writer *outputWriter) 
 		for _, replace := range modFile.Replace {
 			// > Third, filesystem paths found in "replace" directives are
 			// represented by a path with an empty version.
-			if replace.New.Version == "" && !path.IsAbs(replace.New.Path) {
+			if replace.New.Version == "" && !filepath.IsAbs(replace.New.Path) && !path.IsAbs(replace.New.Path) {
 				// The output module is located three directories deeper than the old module.
-				newPath := path.Join("../../../", replace.New.Path)
+				newPath := path.Join("../../../", filepath.ToSlash(replace.New.Path))
 				if err := modFile.AddReplace(replace.Old.Path, replace.Old.Version, newPath, ""); err != nil {
 					log.Fatal(err)
 				}
@@ -311,7 +368,7 @@ func writeGoModFile(modDir string, modFile *modfile.File, writer *outputWriter) 
 	if err := writer.stage("go.mod", bytes); err != nil {
 		log.Fatal(err)
 	}
-	goSumBytes, err := os.ReadFile(path.Join(modDir, "go.sum"))
+	goSumBytes, err := os.ReadFile(filepath.Join(modDir, "go.sum"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -331,15 +388,15 @@ func Translate(input *TranslateInput) (*gosimtool.TranslateOutput, error) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	rootOutputDir := path.Join(modDir, gosimtool.OutputDirectory, "translated", input.Cfg.AsDirname())
+	rootOutputDir := filepath.Join(modDir, gosimtool.OutputDirectory, "translated", input.Cfg.AsDirname())
 
-	cacheDir := path.Join(modDir, gosimtool.OutputDirectory)
+	cacheDir := filepath.Join(modDir, gosimtool.OutputDirectory)
 	if override := os.Getenv("GOSIMCACHE"); override != "" {
 		cacheDir = override
 	}
 
-	cachePath := path.Join(cacheDir, "cache.sqlite3")
-	if err := os.MkdirAll(path.Dir(cachePath), 0o755); err != nil {
+	cachePath := filepath.Join(cacheDir, "cache.sqlite3")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
 		log.Fatal(err)
 	}
 	db, err := cache.NewDB(cachePath)
@@ -377,6 +434,9 @@ func buildReplacePackagesAndPackageNames(convertPkgs, allPkgs []*packages.Packag
 	replacedPkgs["reflect"] = replacedPkgs[reflectPackage]
 	replacedPkgs["internal/reflectlite"] = replacedPkgs[reflectPackage]
 	replacedPkgs["testing"] = replacedPkgs[testingPackage]
+	for orig, replacement := range replacedRuntimePackages {
+		replacedPkgs[orig] = replacedPkgs[replacement]
+	}
 
 	// handle the linkname in the os package
 	replacedPkgs["net"] = "translated/" + gosimtool.ReplaceSpecialPackages("net")
@@ -404,7 +464,7 @@ func checkGosimDep(modFile *modfile.File) {
 func checkSingleModule(modPath string, pkgs []*packages.Package) {
 	for _, pkg := range pkgs {
 		// allow packages from the current module
-		if pkg.Module.GoMod == modPath {
+		if pkg.Module != nil && samePath(pkg.Module.GoMod, modPath) {
 			continue
 		}
 		// allow packages explicitly added by translate
@@ -441,13 +501,13 @@ func translatePackages(cache *cache.Cache, listPatterns []string, rootOutputDir 
 	if err != nil {
 		log.Fatal(err)
 	}
-	modDir := path.Dir(modPath)
+	modDir := filepath.Dir(modPath)
 
 	checkGosimDep(modFile)
 	checkSingleModule(modPath, listedPkgs)
 
 	allPkgs := collectImports(listedPkgs, nil)
-	convertPkgs := collectImports(listedPkgs, skippedPackagesGo123)
+	convertPkgs := collectImports(listedPkgs, skippedPackagesGo127)
 
 	packageGraph := newDepGraph()
 	basePkgs := make(map[string]*packages.Package)
@@ -520,7 +580,7 @@ func translatePackages(cache *cache.Cache, listPatterns []string, rootOutputDir 
 			cfg:                cfg,
 			pkg:                pkgById[pkgId],
 			replacedPkgs:       replacedPkgs,
-			hooksPackage:       hooksGo123Package,
+			hooksPackage:       hooksGo127Package,
 			packageNames:       packageNames,
 			importResults:      localResults,
 			pkgWithTypesAndAst: pkgsWithTypesAndAst[pkgId],
@@ -601,7 +661,7 @@ func findAllDepFiles(pkg *packages.Package, root string) []string {
 			walk(dep)
 		}
 		for _, file := range pkg.GoFiles {
-			if strings.HasPrefix(file, root) {
+			if hasPathPrefix(file, root) {
 				files = append(files, file)
 			}
 		}
@@ -649,3 +709,23 @@ func loadModTimes(files []string, cache map[string]time.Time) (map[string]time.T
 
 // log progress?
 // log.Println(results.pkgID, hex.EncodeToString(results.inputHash[:]))
+
+// samePath reports whether a and b refer to the same file path. On Windows
+// paths are case-insensitive and the go command and os.Getwd can disagree on
+// the case of the drive letter.
+func samePath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// hasPathPrefix reports whether path starts with prefix, comparing like
+// samePath.
+func hasPathPrefix(path, prefix string) bool {
+	if runtime.GOOS == "windows" {
+		return len(path) >= len(prefix) && strings.EqualFold(path[:len(prefix)], prefix)
+	}
+	return strings.HasPrefix(path, prefix)
+}

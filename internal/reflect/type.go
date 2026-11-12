@@ -55,8 +55,8 @@ type Type interface {
 	OverflowFloat(x float64) bool
 	OverflowInt(x int64) bool
 	OverflowUint(x uint64) bool
-	// CanSeq() bool
-	// CanSeq2() bool
+	CanSeq() bool
+	CanSeq2() bool
 	isType()
 	// common() *abi.Type
 	// uncommon() *uncommonType
@@ -258,6 +258,24 @@ func (t *typeImpl) OverflowInt(x int64) bool {
 
 func (t *typeImpl) OverflowUint(x uint64) bool {
 	return t.inner.OverflowUint(x)
+}
+
+func (t *typeImpl) CanSeq() bool {
+	switch t.kind {
+	case wrappedMap:
+		return true
+	default:
+		return t.inner.CanSeq()
+	}
+}
+
+func (t *typeImpl) CanSeq2() bool {
+	switch t.kind {
+	case wrappedMap:
+		return true
+	default:
+		return t.inner.CanSeq2()
+	}
 }
 
 func (t *typeImpl) isType() {}

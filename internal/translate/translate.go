@@ -231,7 +231,7 @@ func translatePackage(args *translatePackageArgs) *TranslatePackageResult {
 
 	var results TranslatePackageResult
 
-	globals := collectGlobalsAndTests(dstFiles, dec.Ast, args.pkg.PkgPath, args.pkg.TypesInfo, globalsDontTranslateGo123)
+	globals := collectGlobalsAndTests(dstFiles, dec.Ast, args.pkg.PkgPath, args.pkg.TypesInfo, globalsDontTranslateGo127)
 	globalInfo := &PackageGlobalInfo{
 		Container:   make(map[string]string),
 		ShouldShare: make(map[string]bool),
@@ -306,8 +306,11 @@ func translatePackage(args *translatePackageArgs) *TranslatePackageResult {
 
 	allGlobals.merge(args.pkg.PkgPath, globalInfo)
 
-	hooks := maps.Clone(hooksGo123)
-	maps.Copy(hooks, hooksGensyscallGo123ByArch[args.cfg.GOARCH])
+	hooks := maps.Clone(hooksGo127)
+	maps.Copy(hooks, hooksGensyscallGo127ByArch[args.cfg.GOARCH])
+	if args.cfg.Race {
+		maps.Copy(hooks, hooksRaceGo127)
+	}
 
 	translator := &packageTranslator{
 		typesInfo:           args.pkg.TypesInfo,
@@ -323,9 +326,10 @@ func translatePackage(args *translatePackageArgs) *TranslatePackageResult {
 			bindspecs: make(map[bindspec]struct{}),
 			maps:      ssaGlobals.readonlyMaps,
 		},
-		hooks:             hooks,
-		acceptedLinknames: acceptedgo123Linknames,
-		keepAsmPkgs:       keepAsmPackagesGo123,
+		hooks:               hooks,
+		acceptedLinknames:   acceptedgo127Linknames,
+		keepAsmPkgs:         keepAsmPackagesGo127,
+		genericMapCallsDone: make(map[*dst.CallExpr]bool),
 	}
 
 	// translate package files
@@ -443,6 +447,10 @@ type packageTranslator struct {
 	forTest bool
 
 	testFuncs map[string]bool
+
+	// genericMapCallsDone tracks calls already handled by
+	// rewriteGenericMapCall
+	genericMapCallsDone map[*dst.CallExpr]bool
 }
 
 func (t *packageTranslator) isBuiltIn(expr dst.Expr) bool {
@@ -496,7 +504,8 @@ func (t *packageTranslator) markSyncFuncsNorace(c *dstutil.Cursor) {
 		return
 	}
 
-	if t.pkgPath == "sync" {
+	// since go1.24 sync.Mutex and sync.Map are implemented in internal/sync
+	if t.pkgPath == "sync" || t.pkgPath == "internal/sync" {
 		// XXX: jank mark all funcs norace in "sync" package
 		decl.Decs.Start = append(decl.Decs.Start, "//go:norace")
 	}
@@ -534,6 +543,7 @@ func (t *packageTranslator) preApply(c *dstutil.Cursor) bool {
 	// TODO: think about and make this ordering less brittle
 
 	// converisons, nil
+	t.rewriteGenericMapCall(c)
 	t.rewriteMapImplicitConversion(c)
 	t.rewriteMapNil(c)
 	t.rewriteMapLiteral(c)

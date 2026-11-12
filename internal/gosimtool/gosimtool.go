@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -51,15 +50,16 @@ func FindGoMod() (string, *modfile.File, error) {
 	}
 
 	for i := 0; i < 20; i++ {
-		p := path.Join(baseDir, "go.mod")
+		p := filepath.Join(baseDir, "go.mod")
 		bytes, err := os.ReadFile(p)
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
 				return "", nil, err
 			}
 
-			baseDir = path.Dir(baseDir)
-			if baseDir != "." {
+			parent := filepath.Dir(baseDir)
+			if parent != baseDir {
+				baseDir = parent
 				continue
 			}
 			return "", nil, errors.New("could not find go.mod file, hit root")
@@ -171,7 +171,11 @@ func ReplaceSpecialPackages(s string) string {
 }
 
 func PreparedTestBinName(pkg string) string {
-	return strings.ReplaceAll(pkg, "/", "-") + ".test"
+	name := strings.ReplaceAll(pkg, "/", "-") + ".test"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return name
 }
 
 func PreparedTestInfoName(pkg string) string {

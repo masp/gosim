@@ -21,14 +21,14 @@ import (
 	testing_original "testing"
 
 	"github.com/jellevandenhooff/gosim/gosimruntime"
-	"translated/github.com/jellevandenhooff/gosim/internal_/hooks/go123"
+	"translated/github.com/jellevandenhooff/gosim/internal_/hooks/go127"
 )
 
 func init() {
 	gosimruntime.SetAllTests([]gosimruntime.Test{})
 }
 func TestMain(m *testing_original.M) {
-	gosimruntime.TestMain(go123.Runtime())
+	gosimruntime.TestMain(go127.Runtime())
 }
 -- hello_linux.go --
 package basicgosim

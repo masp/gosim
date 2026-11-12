@@ -6,8 +6,6 @@ import (
 	"time"
 	"unsafe"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/jellevandenhooff/gosim/gosimruntime"
 	"github.com/jellevandenhooff/gosim/internal/simulation/fs"
 	"github.com/jellevandenhooff/gosim/internal/simulation/syscallabi"
@@ -20,7 +18,6 @@ var (
 	_ syscallabi.ValueView[any]
 	_ syscall.Errno
 	_ fs.InodeInfo
-	_ unix.Errno
 	_ = gosimruntime.GOOS
 )
 

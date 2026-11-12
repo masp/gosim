@@ -25,3 +25,35 @@ jobs:
       # invocations in different folders
       - name: Test
         run: GOFLAGS=-trimpath ./test.sh --concurrency 1
+
+  # Gosim's own test suite requires Linux. On Windows, check that gosim builds
+  # natively and can translate and run simulated tests.
+  windows:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Build
+        run: |
+          go build ./...
+          CGO_ENABLED=0 go build ./...
+
+      - name: Simulated tests
+        run: go run ./cmd/gosim test ./internal/tests/behavior ./nemesis
+
+      - name: Simulated tests without cgo
+        run: CGO_ENABLED=0 go run ./cmd/gosim test ./internal/tests/behavior ./nemesis
+
+      - name: Simulated tests with race detector
+        run: go run ./cmd/gosim test -race ./internal/tests/behavior ./nemesis

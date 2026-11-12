@@ -318,6 +318,19 @@ func (l *LinuxOS) SysOpenat(dirfd int, path string, flags int, mode uint32, invo
 	// just get rid of this
 	flags &= ^syscall.O_CLOEXEC
 
+	// O_DIRECTORY fails if path is not a directory. The standard library
+	// passes it when opening directories (eg. os.ReadDir) since go1.25.
+	if flags&syscall.O_DIRECTORY != 0 {
+		flags &= ^syscall.O_DIRECTORY
+		stat, err := l.machine.filesystem.Stat(dirInode, path)
+		if err != nil {
+			return 0, err
+		}
+		if !stat.IsDir {
+			return 0, syscall.ENOTDIR
+		}
+	}
+
 	// TODO: some rules about paths; component length; total length; allow characters?
 	// TODO: check mode
 
@@ -395,6 +408,10 @@ var openatFlags = &gosimlog.BitflagFormatter{
 		{
 			Value: syscall.O_CLOEXEC,
 			Name:  "O_CLOEXEC",
+		},
+		{
+			Value: syscall.O_DIRECTORY,
+			Name:  "O_DIRECTORY",
 		},
 	},
 }

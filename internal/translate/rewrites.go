@@ -2,7 +2,9 @@ package translate
 
 import (
 	"fmt"
+	"go/ast"
 	"go/token"
+	"go/types"
 	"log/slog"
 	"os"
 	"regexp"
@@ -112,8 +114,36 @@ func (t *packageTranslator) rewriteIdentImpl(ident *dst.Ident) {
 
 func (t *packageTranslator) rewriteIdent(c *dstutil.Cursor) {
 	if ident, ok := c.Node().(*dst.Ident); ok {
+		t.renameShadowingLocal(ident)
 		t.rewriteIdentImpl(ident)
 	}
+}
+
+// globalsAccessorNames are the names of the functions that translated code
+// uses to access package globals (see makeDetgoGlobalsFile).
+var globalsAccessorNames = map[string]bool{
+	"G":        true,
+	"GForTest": true,
+}
+
+// renameShadowingLocal renames local variables that would shadow the globals
+// accessor function, since references to globals are rewritten to calls of
+// that function. For example, crypto/internal/fips140/mlkem has a local
+// variable G in a function that also uses globals.
+func (t *packageTranslator) renameShadowingLocal(ident *dst.Ident) {
+	if !globalsAccessorNames[ident.Name] || ident.Path != "" {
+		return
+	}
+	astIdent, ok := t.astMap.Nodes[ident].(*ast.Ident)
+	if !ok {
+		return
+	}
+	obj := t.typesInfo.ObjectOf(astIdent)
+	v, ok := obj.(*types.Var)
+	if !ok || v.IsField() || v.Parent() == nil || v.Parent() == v.Pkg().Scope() {
+		return
+	}
+	ident.Name += "_gosim"
 }
 
 func (t *packageTranslator) rewriteStdlibEmptyAndLinkname(c *dstutil.Cursor) {
@@ -127,6 +157,13 @@ func (t *packageTranslator) rewriteStdlibEmptyAndLinkname(c *dstutil.Cursor) {
 	// XXX: this misses some linkname stuff
 	// XXX: this wrongly assumes a linkname is going to be part of a FuncDecl's Decs; they can be anywhere in the code
 
+	// Hooks replace package-level functions only. Methods can share a name
+	// with a hooked function (eg. internal/synctest's Run and Bubble.Run).
+	linkTo, isHooked := t.hooks[packageSelector{Pkg: t.pkgPath, Selector: decl.Name.Name}]
+	if decl.Recv != nil {
+		isHooked = false
+	}
+
 	hasLinkname := false
 	for i, val := range decl.Decs.Start {
 		if val == "//go:uintptrkeepalive" {
@@ -136,7 +173,7 @@ func (t *packageTranslator) rewriteStdlibEmptyAndLinkname(c *dstutil.Cursor) {
 		if strings.HasPrefix(val, "//go:linkname") {
 			hasLinkname = true
 
-			if _, ok := t.hooks[packageSelector{Pkg: t.pkgPath, Selector: decl.Name.Name}]; ok {
+			if isHooked {
 				decl.Decs.Start[i] = "//"
 				hasLinkname = false
 				continue
@@ -175,11 +212,9 @@ func (t *packageTranslator) rewriteStdlibEmptyAndLinkname(c *dstutil.Cursor) {
 		}
 	}
 
-	if decl.Body != nil {
-		if _, ok := t.hooks[packageSelector{Pkg: t.pkgPath, Selector: decl.Name.Name}]; ok {
-			// take over!
-			decl.Body = nil
-		}
+	if decl.Body != nil && isHooked {
+		// take over!
+		decl.Body = nil
 	}
 
 	// XXX: hack
@@ -193,7 +228,7 @@ func (t *packageTranslator) rewriteStdlibEmptyAndLinkname(c *dstutil.Cursor) {
 		// XXX: detect all these not implemented ones? output them?
 		// XXX: something similar for... other "bad" calls?
 
-		if linkTo, ok := t.hooks[packageSelector{Pkg: t.pkgPath, Selector: decl.Name.Name}]; ok {
+		if isHooked {
 			selector := RewriteSelector(t.pkgPath, decl.Name.Name)
 
 			pkg := linkTo.Pkg

@@ -256,6 +256,86 @@ func (t *packageTranslator) rewriteMapLiteral(c *dstutil.Cursor) {
 	}, typ))
 }
 
+// rewriteGenericMapCall handles calls to generic functions with a type
+// parameter constrained to maps (eg. maps.Keys[Map ~map[K]V]) that are
+// instantiated with a named map type (eg. textproto.MIMEHeader).
+//
+// After translation such a constraint only accepts gosimruntime.Map[K, V] (see
+// rewriteMapType), so named map arguments are passed as gosimruntime.Map, and
+// a result of the same type parameter is converted back to the named type.
+func (t *packageTranslator) rewriteGenericMapCall(c *dstutil.Cursor) {
+	callExpr, ok := c.Node().(*dst.CallExpr)
+	if !ok || t.genericMapCallsDone[callExpr] {
+		return
+	}
+	astCall, ok := t.astMap.Nodes[callExpr].(*ast.CallExpr)
+	if !ok {
+		return
+	}
+	var astIdent *ast.Ident
+	switch fun := ast.Unparen(astCall.Fun).(type) {
+	case *ast.Ident:
+		astIdent = fun
+	case *ast.SelectorExpr:
+		astIdent = fun.Sel
+	default:
+		// explicit instantiations are not handled
+		return
+	}
+	inst, ok := t.typesInfo.Instances[astIdent]
+	if !ok {
+		return
+	}
+	fn, ok := t.typesInfo.Uses[astIdent].(*types.Func)
+	if !ok {
+		return
+	}
+	sig := fn.Type().(*types.Signature)
+	if sig.TypeParams().Len() != inst.TypeArgs.Len() {
+		// eg. methods on generic types
+		return
+	}
+	t.genericMapCallsDone[callExpr] = true
+
+	converted := make(map[*types.TypeParam]types.Type)
+	params := sig.Params()
+	for i, arg := range callExpr.Args {
+		if i >= params.Len() || (sig.Variadic() && i >= params.Len()-1) {
+			break
+		}
+		tp, ok := params.At(i).Type().(*types.TypeParam)
+		if !ok {
+			continue
+		}
+		if _, ok := isTypMapType(tp); !ok {
+			continue
+		}
+		typeArg := inst.TypeArgs.At(tp.Index())
+		if _, ok := types.Unalias(typeArg).(*types.Named); !ok {
+			continue
+		}
+		if _, ok := typeArg.Underlying().(*types.Map); !ok {
+			continue
+		}
+		callExpr.Args[i] = &dst.CallExpr{
+			Fun:  t.newRuntimeSelector("ExtractMap"),
+			Args: []dst.Expr{arg},
+		}
+		converted[tp] = typeArg
+	}
+
+	if sig.Results().Len() == 1 {
+		if tp, ok := sig.Results().At(0).Type().(*types.TypeParam); ok {
+			if typeArg, ok := converted[tp]; ok {
+				c.Replace(&dst.CallExpr{
+					Fun:  t.makeTypeExpr(typeArg),
+					Args: []dst.Expr{callExpr},
+				})
+			}
+		}
+	}
+}
+
 func (t *packageTranslator) rewriteMapImplicitConversion(c *dstutil.Cursor) {
 	if expr, ok := c.Node().(dst.Expr); ok {
 		astExpr, _ := t.astMap.Nodes[expr].(ast.Expr)

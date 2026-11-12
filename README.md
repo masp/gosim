@@ -1,5 +1,13 @@
 # Gosim: Simulation testing for Go
 [![Go Reference](https://pkg.go.dev/badge/github.com/jellevandenhooff/gosim.svg)](https://pkg.go.dev/github.com/jellevandenhooff/gosim)
+[![Go 1.27](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go)](https://go.dev/doc/devel/release#go1.27.0)
+
+> [!NOTE]
+> Gosim supports **Go 1.27**. Gosim translates the standard library of the Go
+> version you build with, so each Go release needs matching support. Releases
+> are tagged by Go version: use the tag for your Go version, for example
+> `go get github.com/jellevandenhooff/gosim@go1.27`. Go 1.23–1.26 are not
+> supported by the `go1.27` tag.
 
 Gosim is a simulation testing framework that aims to make it easier to write
 reliable distributed systems code in go. Gosim takes standard go programs and
@@ -379,9 +387,16 @@ like reality: The tests for the filesystem in
 [github.com/jellevandenhooff/gosim/internal/tests/behavior/disk_test.go](./internal/tests/behavior/disk_test.go)
 are run in both simulated and non-simulated builds.
 
-Gosim simulates Linux, but should work on macOS, Linux, and Windows (not tested
-on Windows) running on either arm64 or amd64. To test that code works on Linux
-amd64 and arm64, there are scripts `.ci/crossarch-tests/test-amd64.sh` and
-`.ci/crossarch-tests/test-arm64.sh` that run the tests using Docker. A Github
-Action runs the tests on Linux amd64.
+Gosim simulates Linux, but works on macOS, Linux, and Windows running on either
+arm64 or amd64. Code under test always sees a simulated Linux kernel, whatever
+the host operating system.
+
+On Windows, `gosim test`, `gosim build-tests`, and `go test` with the
+`metatesting` package work natively. A C compiler is not required: without cgo,
+Gosim's translation cache uses a pure Go SQLite implementation. Gosim's own test
+suite (`./test.sh`) still requires Linux or macOS.
+
+To test that code works on Linux amd64 and arm64, there are scripts
+`.ci/crossarch-tests/test-amd64.sh` and `.ci/crossarch-tests/test-arm64.sh` that
+run the tests using Docker. A Github Action runs the tests on Linux amd64.
 

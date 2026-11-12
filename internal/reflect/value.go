@@ -553,3 +553,59 @@ func (v Value) Comparable() bool {
 func (v Value) Equal(u Value) bool {
 	return v.inner.Equal(u.inner)
 }
+
+// TypeAssert is semantically equivalent to (but more efficient than)
+// v.Interface().(T).
+func TypeAssert[T any](v Value) (T, bool) {
+	return reflect.TypeAssert[T](v.inner)
+}
+
+// Seq returns an iterator that loops over the elements of v, like a range
+// statement with one variable.
+func (v Value) Seq() func(yield func(Value) bool) {
+	switch v.kind {
+	case wrappedMap:
+		return func(yield func(Value) bool) {
+			iter := v.MapRange()
+			for iter.Next() {
+				if !yield(iter.Key()) {
+					return
+				}
+			}
+		}
+	default:
+		inner := v.inner.Seq()
+		return func(yield func(Value) bool) {
+			for x := range inner {
+				if !yield(wrapValue(x)) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// Seq2 returns an iterator that loops over the elements of v, like a range
+// statement with two variables.
+func (v Value) Seq2() func(yield func(Value, Value) bool) {
+	switch v.kind {
+	case wrappedMap:
+		return func(yield func(Value, Value) bool) {
+			iter := v.MapRange()
+			for iter.Next() {
+				if !yield(iter.Key(), iter.Value()) {
+					return
+				}
+			}
+		}
+	default:
+		inner := v.inner.Seq2()
+		return func(yield func(Value, Value) bool) {
+			for x, y := range inner {
+				if !yield(wrapValue(x), wrapValue(y)) {
+					return
+				}
+			}
+		}
+	}
+}

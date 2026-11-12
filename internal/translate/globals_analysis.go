@@ -40,7 +40,7 @@ func collectGlobalsAndTests(files []*dst.File, astMap decorator.AstMap, pkgPath 
 	return c
 }
 
-var globalsDontTranslateGo123 = map[packageSelector]bool{
+var globalsDontTranslateGo127 = map[packageSelector]bool{
 	{Pkg: "crypto/sha512", Selector: "_K"}: true,
 	// {pkg: "sync/atomic", selector: "firstStoreInProgress"}: true, // no way... universe strikes once again
 	{Pkg: "encoding/json", Selector: "fieldCache"}:   true,
@@ -79,6 +79,11 @@ var globalsDontTranslateGo123 = map[packageSelector]bool{
 	{Pkg: "crypto/sha256", Selector: "useAVX2"}:                               true,
 	{Pkg: "vendor/golang.org/x/crypto/chacha20poly1305", Selector: "useAVX2"}: true,
 	{Pkg: "crypto/internal/bigmod", Selector: "supportADX"}:                   true,
+
+	// go1.24+ asm in crypto/internal/fips140
+	{Pkg: "crypto/internal/fips140/bigmod", Selector: "supportADX"}: true,
+	{Pkg: "crypto/internal/fips140/sha256", Selector: "_K"}:         true,
+	{Pkg: "crypto/internal/fips140/sha512", Selector: "_K"}:         true,
 
 	{Pkg: "github.com/cespare/xxhash/v2", Selector: "primes"}: true,
 }

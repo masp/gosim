@@ -237,9 +237,15 @@ func getCurrentPackageFromWorkingdir() string {
 	if err != nil {
 		log.Fatal(err)
 	}
-	relativePkg := strings.TrimPrefix(baseDir, goModDir)
-	finalPkg := modFile.Module.Mod.Path + relativePkg
-	return finalPkg
+	relativePkg, err := filepath.Rel(goModDir, baseDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if relativePkg == "." {
+		return modFile.Module.Mod.Path
+	}
+	// package paths always use forward slashes, also on Windows
+	return modFile.Module.Mod.Path + "/" + filepath.ToSlash(relativePkg)
 }
 
 // ForCurrentPackage returns a *MetaT for the package currently

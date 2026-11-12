@@ -15,7 +15,7 @@ import (
 	_ "github.com/jellevandenhooff/gosim/cmd/gosim"
 
 	// Packages listed in internal/translate.TranslatedRuntimePackages.
-	_ "github.com/jellevandenhooff/gosim/internal/hooks/go123"
+	_ "github.com/jellevandenhooff/gosim/internal/hooks/go127"
 	_ "github.com/jellevandenhooff/gosim/internal/reflect"
 	_ "github.com/jellevandenhooff/gosim/internal/simulation"
 	_ "github.com/jellevandenhooff/gosim/internal/testing"

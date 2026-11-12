@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -68,7 +69,7 @@ func findAndReadSources(files []string) map[string][]byte {
 	for _, file := range files {
 		pkg := path.Dir(file)
 		dir := pkgs[pkg]
-		p := path.Join(dir, path.Base(file))
+		p := filepath.Join(dir, path.Base(file))
 		bytes, err := os.ReadFile(p)
 		if err != nil {
 			log.Fatal(err)
@@ -441,7 +442,7 @@ func writeProxies(rootDir string, pkgs []string, syscalls []syscallInfo, version
 	for _, pkg := range pkgs {
 		file := strings.Replace(pkg, ".", "", -1)
 		file = strings.Replace(file, "/", "_", -1)
-		path := path.Join(rootDir, "internal/hooks/"+version, file+"_gen_"+arch+".go")
+		path := filepath.Join(rootDir, "internal", "hooks", version, file+"_gen_"+arch+".go")
 
 		writeFormattedGoFile(path, `//go:build linux
 package `+version+`
@@ -457,7 +458,7 @@ var _ unsafe.Pointer
 
 `+proxyTexts[pkg].output())
 	}
-	writeFormattedGoFile(path.Join(rootDir, "internal/translate/hooks_"+version+"_"+arch+"_gen.go"), `package translate
+	writeFormattedGoFile(filepath.Join(rootDir, "internal", "translate", "hooks_"+version+"_"+arch+"_gen.go"), `package translate
 
 func init() {
 	hooksGensyscall`+uppercase(version)+`ByArch["`+arch+`"] = map[packageSelector]packageSelector{
@@ -623,15 +624,20 @@ func writeSyscalls(outputPath string, syscalls []syscallInfo, sysnums map[string
 	if !isMachine {
 		output += "//go:build linux\n"
 	}
+	// golang.org/x/sys/unix is only imported for linux, so that the
+	// machine syscalls (and the simulation package) build on other platforms.
+	unixImport, unixUse := "", ""
+	if !isMachine {
+		unixImport = "\n\t\"golang.org/x/sys/unix\"\n"
+		unixUse = "\t_ unix.Errno\n"
+	}
 	output += fmt.Sprintf(`package simulation
 
 import (
 	"unsafe"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
-
+`+unixImport+`
 	"`+gosimtool.Module+`/gosimruntime"
 	"`+gosimtool.Module+`/internal/simulation/fs"
 	"`+gosimtool.Module+`/internal/simulation/syscallabi"
@@ -644,8 +650,7 @@ var (
 	_ syscallabi.ValueView[any]
 	_ syscall.Errno
 	_ fs.InodeInfo
-	_ unix.Errno
-	_ = gosimruntime.GOOS
+`+unixUse+`	_ = gosimruntime.GOOS
 )
 
 // %s is the interface *%s must implement to work
@@ -853,7 +858,7 @@ func main() {
 			"golang.org/x/sys/unix/zsysnum_linux_" + arch + ".go",
 		})
 
-		writeProxies(rootDir, pkgs, syscalls, "go123", arch)
+		writeProxies(rootDir, pkgs, syscalls, "go127", arch)
 		deduped := dedupSyscalls(syscalls)
 
 		deduped = append(deduped, []syscallInfo{
@@ -871,8 +876,8 @@ func main() {
 			},
 		}...)
 
-		writeSyscalls(path.Join(rootDir, "internal/simulation/linux_gen_"+arch+".go"), deduped, sysnums, false)
+		writeSyscalls(filepath.Join(rootDir, "internal", "simulation", "linux_gen_"+arch+".go"), deduped, sysnums, false)
 	}
 
-	writeSyscalls(path.Join(rootDir, "internal/simulation/gosim_gen.go"), machineCalls, nil, true)
+	writeSyscalls(filepath.Join(rootDir, "internal", "simulation", "gosim_gen.go"), machineCalls, nil, true)
 }

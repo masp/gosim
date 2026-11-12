@@ -1,0 +1,125 @@
+// This file replaces internal/sync/hashtriemap.go when translating the
+// standard library.
+//
+// The standard library's HashTrieMap derives its hash function from the
+// runtime's map type descriptor, which does not work once gosim has replaced
+// maps, and which hashes with a per-process random seed. This implementation
+// instead protects an ordinary map with a mutex, which gosim translates to a
+// deterministic map. This matches how sync.Map behaved before go1.24.
+
+package sync
+
+// HashTrieMap is a concurrent map, used by sync.Map.
+type HashTrieMap[K comparable, V any] struct {
+	mu Mutex
+	m  map[K]V
+}
+
+func (ht *HashTrieMap[K, V]) Load(key K) (value V, ok bool) {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	value, ok = ht.m[key]
+	return value, ok
+}
+
+func (ht *HashTrieMap[K, V]) LoadOrStore(key K, value V) (result V, loaded bool) {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	if old, ok := ht.m[key]; ok {
+		return old, true
+	}
+	if ht.m == nil {
+		ht.m = make(map[K]V)
+	}
+	ht.m[key] = value
+	return value, false
+}
+
+func (ht *HashTrieMap[K, V]) Store(key K, new V) {
+	_, _ = ht.Swap(key, new)
+}
+
+func (ht *HashTrieMap[K, V]) Swap(key K, new V) (previous V, loaded bool) {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	previous, loaded = ht.m[key]
+	if ht.m == nil {
+		ht.m = make(map[K]V)
+	}
+	ht.m[key] = new
+	return previous, loaded
+}
+
+// CompareAndSwap swaps the old and new values for key if the value stored in
+// the map is equal to old. It panics if V is not a comparable type.
+func (ht *HashTrieMap[K, V]) CompareAndSwap(key K, old, new V) (swapped bool) {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	cur, ok := ht.m[key]
+	if !ok || any(cur) != any(old) {
+		return false
+	}
+	ht.m[key] = new
+	return true
+}
+
+func (ht *HashTrieMap[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	value, loaded = ht.m[key]
+	if loaded {
+		delete(ht.m, key)
+	}
+	return value, loaded
+}
+
+func (ht *HashTrieMap[K, V]) Delete(key K) {
+	_, _ = ht.LoadAndDelete(key)
+}
+
+// CompareAndDelete deletes the entry for key if its value is equal to old. It
+// panics if V is not a comparable type.
+func (ht *HashTrieMap[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	cur, ok := ht.m[key]
+	if !ok || any(cur) != any(old) {
+		return false
+	}
+	delete(ht.m, key)
+	return true
+}
+
+// All returns an iterator over each key and value present in the map.
+func (ht *HashTrieMap[K, V]) All() func(yield func(K, V) bool) {
+	return func(yield func(key K, value V) bool) {
+		ht.Range(yield)
+	}
+}
+
+// Range calls yield sequentially for each key and value present in the map.
+// If yield returns false, range stops the iteration.
+//
+// Range iterates over a snapshot so that yield may modify the map.
+func (ht *HashTrieMap[K, V]) Range(yield func(K, V) bool) {
+	ht.mu.Lock()
+	keys := make([]K, 0, len(ht.m))
+	values := make([]V, 0, len(ht.m))
+	for k, v := range ht.m {
+		keys = append(keys, k)
+		values = append(values, v)
+	}
+	ht.mu.Unlock()
+
+	for i := range keys {
+		if !yield(keys[i], values[i]) {
+			return
+		}
+	}
+}
+
+func (ht *HashTrieMap[K, V]) Clear() {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	clear(ht.m)
+}

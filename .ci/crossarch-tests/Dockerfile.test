@@ -1,5 +1,5 @@
 # XXX: parametrize somehow?
-FROM golang:1.23
+FROM golang:1.27
 
 ENV GOCACHE=/cache/GOCACHE GOMODCACHE=/cache/GOMODCACHE GOSIMCACHE=/cache/GOSIMCACHE
 
